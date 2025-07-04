@@ -1,0 +1,208 @@
+---
+title: "Illustration"
+author: "Yezhuo Li"
+date: "2025-06-18"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = FALSE,
+                      warning = FALSE,
+                      fig.width = 8, 
+                      fig.height = 6, 
+                      fig.align = 'center', 
+                      dpi = 300)
+```
+
+This R Markdown document includes the codes and figures in Section 2 and Section 3. 
+
+```{r}
+source("Scales.R")
+source("Functions.R")
+library(sensitivity)
+library(cowplot)
+library(ggplot2)
+library(plotly)
+```
+
+# Summary of Core Parameters
+
+N--- size of grid\
+M--- the number of realization\
+x.sample--- initial data.independent\
+y.sample--- initial data.dependent\
+d--- d-dimension of input variable\
+lb--- lower bound - vector\
+ub--- upper bound - vector\
+budget--- the number of samples in GP experiment\
+n--- the 1/2 number of samples in uniform exxperiment for sensitivity analysis\
+Sensitivity Analysis--- Run Sobol' Analysis Using Saltelli's Scheme
+
+```{r}
+N <- 1000
+M <- 500
+d <- 2
+lb = c(-2, 0.8)
+ub = c(2, 1.2)
+n <- 1000
+budget <- 100
+```
+
+# Function (Section 2)
+```{=latex}
+\begin{equation*}
+    y\left( x_1, x_2 \right) = -0.3 \sqrt{ 1- \frac{x_1^2}{4} } - 3 \sqrt{1- \frac{\left( x_2-1 \right)^2}{0.04}} + 4
+\end{equation*}
+```
+
+```{r}
+quadratic_2D <- function(xx)
+{
+  x1 <- xx[1]
+  x2 <- xx[2]
+  
+  y <- -sqrt(0.3^2 * (1 - x1^2/2^2)) - sqrt(1 - (x2 - 1)^2/0.2^2)*3 + 4
+  
+  return(y)
+}
+```
+
+#### Plot Function (Figure 1(a) in Section 2)
+```{r}
+x1_values <- seq(lb[1], ub[1], length.out = 100)
+x2_values <- seq(lb[2], ub[2], length.out = 100)
+grid <- expand.grid(x1 = x1_values, x2 = x2_values)
+z_values <- numeric(nrow(grid))
+for (i in 1:nrow(grid)) {
+  tryCatch({
+    z_values[i] <- quadratic_2D(c(grid$x1[i], grid$x2[i]))
+  }, error = function(e) {
+    z_values[i] <- NA
+  }, warning = function(w) {
+    z_values[i] <- NA
+  })
+}
+grid$z <- z_values
+grid <- grid[!is.na(grid$z), ]
+
+plot_ly(x = x1_values, y = x2_values, 
+        z = matrix(grid$z, nrow = length(x1_values), byrow = FALSE),
+        width = 800, height = 600) %>%
+  add_surface(contours = list(z = list(show = TRUE, usecolormap = TRUE))) %>%
+  layout(scene = list(xaxis = list(title = "x1"),
+                      yaxis = list(title = "x2"),
+                      zaxis = list(title = "f(x1,x2)")))
+```
+
+# Sensativity Analysis
+## Uniform Experiment (Section 3)
+
+```{r}
+set.seed(123)
+X1 <- data.frame(x1 = runif(n, 0, 1), x2 = runif(n, 0, 1))
+X1 <- scale_to_org(X1, lb, ub)
+
+X2 <- data.frame(x1 = runif(n, 0, 1), x2 = runif(n, 0, 1))
+X2 <- scale_to_org(X2, lb, ub)
+
+sobol_result <- sobolSalt(model = NULL, X1, X2, scheme="A", nboot = 100)
+sobol_result <- tell(sobol_result, y = apply(sobol_result$X, 1, quadratic_2D))
+```
+
+#### Plot Sensativity Analysis Result for Uniform Experiment (Figure 2(a) in Section 3)
+```{r}
+ss_effects <- c(sobol_result$S$original, sobol_result$T$original)
+sens <- data.frame(X=rep(c('x1','x2'), 2), value = ss_effects, 
+                   group = rep(c("Sobol' First-Order Indices", 
+                                 "Sobol' Total Sensitivity Indices"), each=2))
+
+p_uniform <- ggplot(sens, aes(x = X, y = value)) +
+  geom_col(aes(fill = group), position = "dodge") +
+  geom_text(aes(label = sprintf("%.4f", value)), position = position_dodge2(width = 0.8), 
+            vjust = -0.2, size = 3) +  
+  geom_point(data = subset(sens, group == "First"), 
+             position = position_dodge(width = 0.8), size = 4) +
+  geom_point(data = subset(sens, group == "Total"),
+             position = position_dodge(width = 0.8), size = 4) +
+  scale_color_manual(values = c("#0073C2FF", "#EFC000FF"), name = " ") +
+  scale_fill_manual(values = c("#0073C2FF", "#EFC000FF"), name = " ") +
+  scale_y_continuous(limits = c(0, 1)) +  
+  labs(title = "Uniform", x=NULL, y=NULL) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5), 
+        legend.position = "top",
+        axis.text = element_text(size = 9)) 
+print(p_uniform)
+```
+
+## Decision Uncertainty Experiment (Section 3)
+```{r}
+set.seed(321)
+x.sample <- randomLHS(budget, d)
+x.sample <- scale_to_org(x.sample, lb, ub)
+y.sample <- apply(x.sample, 1, quadratic_2D)
+result_gp <- gp_opts_unconstraint(x.sample, y.sample, lb, ub, N, M, d)
+x_gp <- result_gp[[2]]
+y_gp <- result_gp[[3]]
+surrogate_y <- function(X){result_gp$gpm_y(X)$mean}
+
+gp_mean <- gp_opt_mean_unconstraint(x.sample, y.sample, lb, ub, d)
+gp_mean_y <- surrogate_y(matrix(gp_mean, nrow = 1))
+
+X1 <- x_gp[1:(M/2), ]
+X2 <- x_gp[(M/2+1):M, ]
+sobol_result_gp <- sobolSalt(model = surrogate_y, X1, X2, scheme="A", nboot = 100)
+```
+
+#### Plot Sensativity Analysis Result for Decision Uncertainty Experiment (Figure 2(b) in Section 3)
+```{r}
+ss_effects_gp <- c(sobol_result_gp$S$original, sobol_result_gp$T$original)
+sens_gp <- data.frame(X=rep(c('x1','x2'), 2), value = ss_effects_gp, 
+                      group = rep(c("Sobol' First-Order Indices", 
+                                    "Sobol' Total Sensitivity Indices"), each=2))
+
+p_gp.opt <- ggplot(sens_gp, aes(x = X, y = value)) +
+  geom_col(aes(fill = group), position = "dodge") +
+  geom_text(aes(label = sprintf("%.4f", value)), position = position_dodge2(width = 0.8), 
+            vjust = -0.2, size = 3) +  
+  geom_point(data = subset(sens_gp, group == "First"), 
+             position = position_dodge(width = 0.8), size = 4) +
+  geom_point(data = subset(sens_gp, group == "Total"), 
+             position = position_dodge(width = 0.8), size = 4) +
+  scale_color_manual(values = c("#0073C2FF", "#EFC000FF"), name = " ") +
+  scale_fill_manual(values = c("#0073C2FF", "#EFC000FF"), name = " ") +
+  scale_y_continuous(limits = c(0, 1)) +  
+  labs(title = "Decision Uncertainty", x=NULL, y=NULL) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5), 
+        legend.position = "top",
+        legend.title = element_text(size = 8),
+        axis.text = element_text(size = 9)) 
+print(p_gp.opt)
+```
+#### Combined Plot in Section 3
+```{r}
+combined_plot <- plot_grid(p_uniform, p_gp.opt, labels = c("", ""), nrow = 1)  
+print(combined_plot)
+```
+
+# Contour Plot of Probability Density Function for Optimization Problem 
+# (Figure 1(b) in Section 2)
+```{r}
+dff <- data.frame(x=x_gp[,1], y=x_gp[,2], z=y_gp)
+
+contour_plot <- ggplot(dff, aes(x = x, y = y)) +
+  stat_density_2d(aes(fill = ..level..), 
+                  geom = "polygon",
+                  contour = TRUE) +
+  scale_fill_viridis_c(option = "viridis", direction = -1) +
+  theme_minimal() +
+  labs(x = "X1", y = "X2")
+
+print(contour_plot)
+```
+
+

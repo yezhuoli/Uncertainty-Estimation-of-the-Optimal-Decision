@@ -1,0 +1,193 @@
+---
+title: "CaseStudy"
+author: "Yezhuo Li"
+date: "2025-06-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = FALSE,
+                      warning = FALSE,
+                      fig.width = 8, 
+                      fig.height = 6, 
+                      fig.align = 'center', 
+                      dpi = 300)
+```
+
+This R Markdown document includes the codes and figures in Section 4.
+
+```{r}
+source("Scales.R")
+source("Functions.R")
+library(sensitivity)
+library(cowplot)
+library(ggplot2)
+```
+
+# Summary of Core Parameters
+
+N--- size of grid\
+M--- the number of realization\
+x.sample--- initial input data\
+y.sample--- initial output data\
+g.sample--- initial constraint data\
+d--- d-dimension of input variable\
+lb--- lower bound - vector\
+ub--- upper bound - vector\
+g_constraint--- constraint threshold\
+Sensitivity Analysis--- Run Sobol' Analysis Using Saltelli's Scheme
+
+```{r}
+lb <- c(125, 150, 600, 7200)
+ub <- c(180, 180, 6600, 12000) 
+eps <- sqrt(.Machine$double.eps)
+g_constraint <- 0.96
+d <- 4
+initial_sample_size <- 50
+N <- 500 
+M <- 10000
+```
+
+#### Load Cure Process Data
+
+```{r}
+load("Q22.Rdata")
+x.sample <-Q22[,1:4]
+y.sample <- Q22[,5]
+g.sample <- Q22[,6]
+```
+
+# Decision Uncertainty Experiment: Optimal Decision Uncertainty & Sensativity Analysis (Section 4)
+
+```{r}
+set.seed(123)
+result_gp <- gp_opts_constraint(x.sample, y.sample, g.sample, g_constraint, lb, ub, N, M, d)
+x_gp <- result_gp$gp.xhat
+y_gp <- result_gp$gp.yhat
+g_gp <- result_gp$gp.ghat
+surrogate_y <- function(X){result_gp$gpm_y(X)$mean}
+surrogate_g <- function(X){result_gp$gpm_g(X)$mean}
+
+opt_mean <- gp_opt_mean_constraint(x.sample, y.sample, g.sample, g_constraint, lb, ub)
+opt_true_A <- c(opt_mean[3]/60,opt_mean[1])
+opt_true_B <- c(opt_mean[4]/60,opt_mean[2])
+```
+
+#### Plot Optimal Decision Uncertainty (Figure 4 in Section 4)
+
+```{r}
+aa=rbind(cbind(x_gp[ ,2], x_gp[ ,4]/60), cbind(x_gp[,1], x_gp[,3]/60))
+df_plot <- data.frame(Time=aa[,2], Temperature=aa[,1])
+
+custom_breaks <- c(0, 0.00005, 0.0001, 0.00015, 0.0002, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1)
+ggplot(df_plot, aes(x = Time, y = Temperature)) +
+  geom_density_2d_filled(aes(fill = ..level..), breaks = custom_breaks) +
+  scale_fill_brewer(palette = "PuBu", name = "Density Level") +  
+  geom_point(aes(x = opt_true_A[1], y = opt_true_A[2]), color = "red", size = 2.5) +
+  geom_point(aes(x = opt_true_B[1], y = opt_true_B[2]), color = "red", size = 2.5) +
+  geom_segment(aes(x = 7.5, y = 140, xend = opt_true_A[1], yend = opt_true_A[2]), color = "red") +
+  geom_segment(aes(x = opt_true_A[1], y = opt_true_A[2], xend = opt_true_B[1], yend = opt_true_B[2]), color = "red") +
+  geom_segment(aes(x = opt_true_B[1], y = opt_true_B[2], xend = 200.385, yend = 140), color = "red") +
+  ylim(140, 185) +
+  xlim(0, 205) +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    plot.margin = unit(c(0.5, 3, 0.5, 3), "cm")
+  ) +
+  labs(x = "Time", y = "Temperature")
+```
+
+#### Compute Sensitivity Scores
+
+```{r}
+X1 <- x_gp[1:(M/2), ]
+X2 <- x_gp[(M/2+1):M, ]
+sobol_result <- sobolSalt(model = surrogate_y, X1, X2, scheme="A", nboot = 100)
+
+ss_effects_gp <- c(sobol_result$S$original, sobol_result$T$original)
+ss_effects_gp[ss_effects_gp < 0] <- 0 
+ss_effects_gp[ss_effects_gp > 1] <- 1 
+```
+
+##### Plot Sensitivity Analysis Result From Decision Uncertainty Experiment (Figure 5 in Section 4)
+
+```{r}
+sens_gp <- data.frame(X=rep(colnames(x.sample), 2), value = ss_effects_gp, 
+                      group = rep(c("Sobol' First-Order Indices", 
+                                    "Sobol' Total Sensitivity Indices"), 
+                                  each=length(ss_effects_gp)/2))
+
+p_gp.opt <- ggplot(sens_gp, aes(x = X, y = value)) +
+  geom_col(aes(fill = group), position = "dodge") +
+  geom_text(aes(label = sprintf("%.4f", value)), position = position_dodge2(width = 0.8), 
+            vjust = -0.2, size = 3) +  
+  geom_point(data = subset(sens_gp, group == "First"), 
+             position = position_dodge(width = 0.8), size = 4) +
+  geom_point(data = subset(sens_gp, group == "Total"), 
+             position = position_dodge(width = 0.8), size = 4) +
+  scale_color_manual(values = c("#0073C2FF", "#EFC000FF"), name = " ") +
+  scale_fill_manual(values = c("#0073C2FF", "#EFC000FF"), name = " ") +
+  scale_y_continuous(limits = c(0, 1)) +  
+  labs(title = "Decision Uncertainty", x=NULL, y=NULL) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5), 
+        legend.position = "top",
+        legend.title = element_text(size = 8),
+        axis.text = element_text(size = 9)) 
+print(p_gp.opt)
+```
+
+# Uniform Experiment: Sensativity Analysis (Section 4)
+#### Compute Sensitivity Scores
+```{r}
+set.seed(123)
+xu1 <- randomLHS(M, 4)
+xu2 <- randomLHS(M, 4)
+xo1 <- scale_to_org(xu1, lb, ub)
+xo2 <- scale_to_org(xu2, lb, ub)
+xo1_feasible <- xo1[which(surrogate_g(xo1)>g_constraint), ][1:M/2, ]
+xo2_feasible <- xo2[which(surrogate_g(xo2)>g_constraint), ][1:M/2, ]
+
+ss_uniform <- sobolSalt(model = surrogate_y, xo1_feasible, xo2_feasible, scheme="A", nboot = 100)
+ss_effects_uniform <- c(ss_uniform$S$original, ss_uniform$T$original)
+ss_effects_uniform[ss_effects_uniform < 0] <- 0
+ss_effects_uniform[ss_effects_uniform > 1] <- 1
+```
+
+##### Plot Sensitivity Analysis Result From Uniform Experiment (Figure 5 in Section 4)
+```{r}
+sens_uniform <- data.frame(X=rep(colnames(x.sample), 2), value = ss_effects_uniform, 
+                           group = rep(c("Sobol' First-Order Indices", 
+                                         "Sobol' Total Sensitivity Indices"),
+                                       each=length(ss_effects_uniform)/2))
+
+plot_uniform <- ggplot(sens_uniform, aes(x = X, y = value)) +
+  geom_col(aes(fill = group), position = "dodge") +
+  geom_text(aes(label = sprintf("%.4f", value)), position = position_dodge2(width = 0.8), 
+            vjust = -0.2, size = 3) +  
+  geom_point(data = subset(sens_uniform, group == "First"), 
+             position = position_dodge(width = 0.8), size = 4) +
+  geom_point(data = subset(sens_uniform, group == "Total"),
+             position = position_dodge(width = 0.8), size = 4) +
+  scale_color_manual(values = c("#0073C2FF", "#EFC000FF"), name = " ") +
+  scale_fill_manual(values = c("#0073C2FF", "#EFC000FF"), name = " ") +
+  scale_y_continuous(limits = c(0, 1)) +  
+  labs(title = "Uniform", x=NULL, y=NULL) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5), 
+        legend.position = "top",
+        axis.text = element_text(size = 9)) 
+print(plot_uniform)
+```
+
+## Combined Plot (Figure 5 in Section 4)
+```{r}
+p<- combined_plot <- plot_grid(plot_uniform, p_gp.opt, labels = c("", ""), nrow = 1) 
+ggsave("sa_4D_1.jpeg", p, width = 16, height = 6, dpi = 300)
+print(combined_plot)
+```
